@@ -163,10 +163,61 @@ app.post('/api/speedtest', async (req, res) => {
             message: 'Speed test saved successfully',
             details: { wilaya, commune, cell_id, operator }
         });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
 
-    } catch (error) {
-        console.error('Error saving speed test:', error);
-        res.status(500).json({ error: 'Failed to save data' });
+// --- NEW: Simple Web Dashboard ---
+app.get('/dashboard', async (req, res) => {
+    try {
+        const [rows] = await pool.execute('SELECT * FROM speed_tests ORDER BY timestamp DESC LIMIT 50');
+
+        let html = `
+        <html>
+        <head>
+            <title>Mobilis Dashboard</title>
+            <meta http-equiv="refresh" content="30"> <!-- Refresh every 30s -->
+            <style>
+                body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
+                h1 { color: #004e92; }
+                table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+                th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
+                th { background: #004e92; color: white; }
+                tr:hover { background: #f5f5f5; }
+            </style>
+        </head>
+        <body>
+            <h1>📊 Mobilis Network Monitor</h1>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Wilaya</th>
+                    <th>Network</th>
+                    <th>Down (Mbps)</th>
+                    <th>Up (Mbps)</th>
+                    <th>Ping (ms)</th>
+                </tr>
+        `;
+
+        rows.forEach(row => {
+            html += `
+            <tr>
+                <td>${new Date(row.timestamp).toLocaleString()}</td>
+                <td>${row.wilaya || 'N/A'}</td>
+                <td>${row.network_type || 'N/A'}</td>
+                <td><b>${row.download_mbps}</b></td>
+                <td>${row.upload_mbps}</td>
+                <td>${row.latency_ms}</td>
+            </tr>`;
+        });
+
+        html += `</table></body></html>`;
+        res.send(html);
+
+    } catch (e) {
+        res.status(500).send('Error loading dashboard: ' + e.message);
     }
 });
 
