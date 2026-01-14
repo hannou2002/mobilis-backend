@@ -17,12 +17,16 @@ const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'mobilis_dashboard',
-    ssl: {
+    database: process.env.DB_NAME || 'mobilis_dashboard'
+};
+
+// Enable SSL only for TiDB (Remote)
+if (dbConfig.host !== 'localhost') {
+    dbConfig.ssl = {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: true
-    }
-};
+    };
+}
 
 // Create a connection pool
 const pool = mysql.createPool(dbConfig);
@@ -170,50 +174,165 @@ app.post('/api/speedtest', async (req, res) => {
 });
 
 // --- NEW: Simple Web Dashboard ---
+// --- NEW: Rich Web Dashboard with Chart.js ---
 app.get('/dashboard', async (req, res) => {
     try {
+        // Fetch 50 most recent tests for the Table
         const [rows] = await pool.execute('SELECT * FROM speed_tests ORDER BY timestamp DESC LIMIT 50');
 
+        // Fetch last 100 tests for the Chart (to show trends) -> Reverse to show oldest to newest
+        const [chartRows] = await pool.execute('SELECT * FROM speed_tests ORDER BY timestamp DESC LIMIT 100');
+        const chartData = chartRows.reverse();
+
+        // Prepare Data for Chart
+        const labels = chartData.map(r => new Date(r.timestamp).toLocaleString()); // Full readable string
+        const downloads = chartData.map(r => r.download_mbps);
+        const uploads = chartData.map(r => r.upload_mbps);
+        const pings = chartData.map(r => r.latency_ms);
+
         let html = `
+        <!DOCTYPE html>
         <html>
         <head>
             <title>Mobilis Dashboard</title>
-            <meta http-equiv="refresh" content="30"> <!-- Refresh every 30s -->
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta http-equiv="refresh" content="60"> <!-- Refresh every 60s -->
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
             <style>
-                body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
-                h1 { color: #004e92; }
-                table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-                th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
-                th { background: #004e92; color: white; }
-                tr:hover { background: #f5f5f5; }
+                body { font-family: 'Segoe UI', sans-serif; padding: 20px; background: #f4f6f9; margin: 0; }
+                .container { max-width: 1200px; margin: 0 auto; }
+                h1 { color: #004e92; margin-bottom: 20px; }
+                .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; }
+                
+                table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                th, td { padding: 12px 15px; border-bottom: 1px solid #eee; text-align: left; font-size: 14px; }
+                th { background: #004e92; color: white; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }
+                tr:hover { background: #f8f9fa; }
+                
+                .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+                .bg-4g { background: #e3f2fd; color: #1565c0; }
+                .bg-3g { background: #fff3e0; color: #ef6c00; }
+                
+                canvas { max-height: 400px; width: 100%; }
             </style>
         </head>
         <body>
-            <h1>📊 Mobilis Network Monitor</h1>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Wilaya</th>
-                    <th>Network</th>
-                    <th>Down (Mbps)</th>
-                    <th>Up (Mbps)</th>
-                    <th>Ping (ms)</th>
-                </tr>
+            <div class="container">
+                <h1>📊 Mobilis Network Monitor</h1>
+                
+                <!-- CHART SECTION -->
+                <div class="card">
+                    <h2>Performance Trends</h2>
+                    <canvas id="speedChart"></canvas>
+                </div>
+
+                <!-- TABLE SECTION -->
+                <div class="card">
+                    <h2>Recent Tests</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date / Time</th>
+                                <th>Wilaya (Commune)</th>
+                                <th>Network</th>
+                                <th>Download</th>
+                                <th>Upload</th>
+                                <th>Ping</th>
+                            </tr>
+                        </thead>
+                        <tbody>
         `;
 
         rows.forEach(row => {
+            const dateObj = new Date(row.timestamp);
+            const dateStr = dateObj.toLocaleDateString();
+            const timeStr = dateObj.toLocaleTimeString();
+
+            const netClass = (row.network_type === '4G') ? 'bg-4g' : 'bg-3g';
+
             html += `
             <tr>
-                <td>${new Date(row.timestamp).toLocaleString()}</td>
-                <td>${row.wilaya || 'N/A'}</td>
-                <td>${row.network_type || 'N/A'}</td>
-                <td><b>${row.download_mbps}</b></td>
-                <td>${row.upload_mbps}</td>
-                <td>${row.latency_ms}</td>
+                <td><b>${dateStr}</b> <span style="color:#666; font-size:0.9em">${timeStr}</span></td>
+                <td>${row.wilaya || '-'} <small>(${row.commune || '-'})</small></td>
+                <td><span class="badge ${netClass}">${row.network_type || 'N/A'}</span></td>
+                <td style="color:#004e92"><b>${row.download_mbps.toFixed(1)}</b> Mbps</td>
+                <td style="color:#28a745"><b>${row.upload_mbps.toFixed(1)}</b> Mbps</td>
+                <td>${row.latency_ms} ms</td>
             </tr>`;
         });
 
-        html += `</table></body></html>`;
+        html += `
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <script>
+                const ctx = document.getElementById('speedChart').getContext('2d');
+                const speedChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: ${JSON.stringify(labels)},
+                        datasets: [
+                            {
+                                label: 'Download (Mbps)',
+                                data: ${JSON.stringify(downloads)},
+                                borderColor: '#004e92',
+                                backgroundColor: 'rgba(0, 78, 146, 0.1)',
+                                borderWidth: 2,
+                                tension: 0.4,
+                                fill: true
+                            },
+                            {
+                                label: 'Upload (Mbps)',
+                                data: ${JSON.stringify(uploads)},
+                                borderColor: '#28a745',
+                                backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                                borderWidth: 2,
+                                tension: 0.4,
+                                fill: true
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        scales: {
+                            x: {
+                                ticks: {
+                                    // Custom Date Formatter for Chart Axis
+                                    callback: function(val, index) {
+                                        // Use short time only for axis to save space
+                                        return this.getLabelForValue(val).split(',')[1]; 
+                                    }
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: 'Speed (Mbps)' }
+                            }
+                        },
+                        plugins: {
+                            tooltip: {
+                                callbacks: {
+                                    title: function(context) {
+                                        // Fix formatting in Tooltip: Date - Time
+                                        const original = context[0].label;
+                                        return original.replace(',', ' - '); 
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            </script>
+        </body>
+        </html>`;
+
         res.send(html);
 
     } catch (e) {

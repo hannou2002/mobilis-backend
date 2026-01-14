@@ -20,7 +20,7 @@ async function start() {
     server.on('exit', (code) => {
         if (code !== 0) {
             console.error(`❌ Backend Server crashed with code ${code}. Stopping...`);
-            tunnel.close();
+            // tunnel might not be defined yet if crash happens immediately, but usually it is.
             process.exit(code);
         }
     });
